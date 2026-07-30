@@ -2915,6 +2915,9 @@ function settingsHtml(webview: vscode.Webview): string {
         document.getElementById("saved").textContent = "已保存";
         setTimeout(() => document.getElementById("saved").textContent = "", 1800);
       });
+      document.getElementById("pureCodeDisguise").addEventListener("change", () => {
+        form.requestSubmit();
+      });
       document.getElementById("keyboard-shortcuts").addEventListener("click", () => {
         vscode.postMessage({ type: "openKeyboardShortcuts" });
       });
