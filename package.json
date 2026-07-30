@@ -2,7 +2,7 @@
   "name": "linux-do-reader",
   "displayName": "Linux.do 阅读器",
   "description": "在 VS Code 中以紧凑、低干扰布局浏览 Linux.do。",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "local",
   "license": "MIT",
   "homepage": "https://github.com/lin1122lin/linux-do-vscode-reader#readme",
@@ -196,6 +196,16 @@
           "default": true,
           "description": "在阅读器顶部显示话题标题栏。"
         },
+        "linuxDoReader.enableInteractions": {
+          "type": "boolean",
+          "default": true,
+          "description": "在话题阅读页显示手动回复和点赞按钮。"
+        },
+        "linuxDoReader.confirmBeforeReply": {
+          "type": "boolean",
+          "default": true,
+          "description": "发布回复前显示二次确认对话框。"
+        },
         "linuxDoReader.disguiseOnOpen": {
           "type": "boolean",
           "default": false,
@@ -215,6 +225,7 @@
           "type": "array",
           "default": [
             "disguise",
+            "reply",
             "openOriginal",
             "settings"
           ],
@@ -223,6 +234,7 @@
             "type": "string",
             "enum": [
               "disguise",
+              "reply",
               "openOriginal",
               "settings"
             ]

@@ -43,6 +43,12 @@ interface Post {
     username: string;
     name?: string;
   };
+  actions_summary?: Array<{
+    id: number;
+    count?: number;
+    acted?: boolean;
+    can_act?: boolean;
+  }>;
 }
 
 interface TopicDetail {
@@ -55,6 +61,15 @@ interface TopicDetail {
     posts: Post[];
     stream: number[];
   };
+  details?: {
+    can_create_post?: boolean;
+  };
+}
+
+interface CreatePostResponse extends Partial<Post> {
+  post?: Post;
+  action?: string;
+  success?: boolean;
 }
 
 interface Category {
@@ -227,6 +242,59 @@ class BrowserSession implements vscode.Disposable {
         body: await response.text()
       };
     })()`;
+    return this.evaluateJson<T>(expression);
+  }
+
+  async mutate<T>(
+    pathName: string,
+    method: "POST" | "DELETE",
+    body: Record<string, unknown>
+  ): Promise<T> {
+    if (!(await this.isReady())) {
+      throw new LinuxDoError("尚未连接专用 Chrome，请先完成一次浏览器登录。", 428);
+    }
+    await this.ensureRunning(false);
+    await this.ensureLinuxDoPage();
+
+    const expression = `(async () => {
+      const csrfResponse = await fetch(new URL("/session/csrf.json", location.origin), {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          "Accept": "application/json",
+          "X-Requested-With": "XMLHttpRequest"
+        }
+      });
+      if (!csrfResponse.ok) {
+        return {
+          status: csrfResponse.status,
+          contentType: csrfResponse.headers.get("content-type") || "",
+          body: await csrfResponse.text()
+        };
+      }
+      const csrfPayload = await csrfResponse.json();
+      const response = await fetch(new URL(${JSON.stringify(pathName)}, location.origin), {
+        method: ${JSON.stringify(method)},
+        credentials: "include",
+        redirect: "manual",
+        headers: {
+          "Accept": "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfPayload.csrf,
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        body: JSON.stringify(${JSON.stringify(body)})
+      });
+      return {
+        status: response.status,
+        contentType: response.headers.get("content-type") || "",
+        body: await response.text()
+      };
+    })()`;
+    return this.evaluateJson<T>(expression);
+  }
+
+  private async evaluateJson<T>(expression: string): Promise<T> {
     const evaluation = await this.connection!.send<{
       result?: { value?: BrowserFetchResult; description?: string };
       exceptionDetails?: { text?: string };
@@ -250,7 +318,7 @@ class BrowserSession implements vscode.Disposable {
       await this.context.globalState.update(BROWSER_READY_KEY, false);
       throw new LinuxDoError("Linux.do 登录已失效，请重新连接 Chrome。", 401);
     }
-    if (response.status === 403 || !response.contentType.includes("json")) {
+    if (!response.contentType.includes("json")) {
       await this.context.globalState.update(BROWSER_READY_KEY, false);
       throw new LinuxDoError(
         "Chrome 会话需要重新完成 Cloudflare 验证，请打开专用 Chrome。",
@@ -258,7 +326,21 @@ class BrowserSession implements vscode.Disposable {
       );
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new LinuxDoError(`Linux.do 请求失败（HTTP ${response.status}）。`, response.status);
+      let detail = "";
+      try {
+        const payload = JSON.parse(response.body) as {
+          errors?: string[];
+          error?: string;
+          message?: string;
+        };
+        detail = payload.errors?.join("；") || payload.error || payload.message || "";
+      } catch {
+        // Keep the generic status message when the server did not return JSON.
+      }
+      throw new LinuxDoError(
+        detail || `Linux.do 请求失败（HTTP ${response.status}）。`,
+        response.status
+      );
     }
     try {
       return JSON.parse(response.body) as T;
@@ -490,6 +572,32 @@ class LinuxDoClient implements vscode.Disposable {
     return payload.post_stream?.posts ?? [];
   }
 
+  async createReply(
+    topicId: number,
+    raw: string,
+    replyToPostNumber?: number
+  ): Promise<CreatePostResponse> {
+    return this.browser.mutate<CreatePostResponse>("/posts.json", "POST", {
+      topic_id: topicId,
+      raw,
+      ...(replyToPostNumber ? { reply_to_post_number: replyToPostNumber } : {})
+    });
+  }
+
+  async likePost(postId: number): Promise<Post> {
+    return this.browser.mutate<Post>("/post_actions.json", "POST", {
+      id: postId,
+      post_action_type_id: 2,
+      flag_topic: false
+    });
+  }
+
+  async unlikePost(postId: number): Promise<Post> {
+    return this.browser.mutate<Post>(`/post_actions/${postId}.json`, "DELETE", {
+      post_action_type_id: 2
+    });
+  }
+
   private async request<T>(path: string, cookieOverride?: string): Promise<T> {
     if (cookieOverride) {
       throw new LinuxDoError("0.3.0 起不再使用复制 Cookie，请连接专用 Chrome。");
@@ -662,6 +770,8 @@ class TopicPanel {
   private detail?: TopicDetail;
   private loadedPostIds = new Set<number>();
   private loading = false;
+  private replying = false;
+  private readonly interactingPostIds = new Set<number>();
   private disguised: boolean;
 
   static async show(client: LinuxDoClient, topic: TopicSummary): Promise<void> {
@@ -751,7 +861,16 @@ class TopicPanel {
     if (!message || typeof message !== "object") {
       return;
     }
-    const value = message as { type?: string; href?: string };
+    const value = message as {
+      type?: string;
+      href?: string;
+      postId?: number;
+      postNumber?: number;
+      liked?: boolean;
+      count?: number;
+      raw?: string;
+      replyToPostNumber?: number;
+    };
     if (value.type === "openLink" && value.href) {
       const uri = safeExternalUri(value.href);
       if (uri) {
@@ -773,6 +892,124 @@ class TopicPanel {
     }
     if (value.type === "loadMore") {
       await this.loadMore();
+      return;
+    }
+    if (
+      value.type === "toggleLike" &&
+      typeof value.postId === "number" &&
+      typeof value.liked === "boolean"
+    ) {
+      await this.toggleLike(value.postId, value.liked, value.count ?? 0);
+      return;
+    }
+    if (value.type === "submitReply" && typeof value.raw === "string") {
+      await this.submitReply(value.raw, value.replyToPostNumber);
+    }
+  }
+
+  private async toggleLike(postId: number, liked: boolean, count: number): Promise<void> {
+    if (
+      !vscode.workspace
+        .getConfiguration("linuxDoReader")
+        .get<boolean>("enableInteractions", true) ||
+      this.interactingPostIds.has(postId)
+    ) {
+      return;
+    }
+    this.interactingPostIds.add(postId);
+    await this.panel.webview.postMessage({ type: "likeBusy", postId, value: true });
+    try {
+      const post = liked
+        ? await this.client.unlikePost(postId)
+        : await this.client.likePost(postId);
+      const action = post.actions_summary?.find((item) => item.id === 2);
+      await this.panel.webview.postMessage({
+        type: "likeUpdated",
+        postId,
+        liked: action?.acted ?? !liked,
+        count: action?.count ?? Math.max(0, count + (liked ? -1 : 1))
+      });
+    } catch (error) {
+      await this.panel.webview.postMessage({
+        type: "actionError",
+        postId,
+        message: toMessage(error)
+      });
+    } finally {
+      this.interactingPostIds.delete(postId);
+      await this.panel.webview.postMessage({ type: "likeBusy", postId, value: false });
+    }
+  }
+
+  private async submitReply(rawValue: string, replyToPostNumber?: number): Promise<void> {
+    const configuration = vscode.workspace.getConfiguration("linuxDoReader");
+    if (!configuration.get<boolean>("enableInteractions", true) || this.replying) {
+      return;
+    }
+    const raw = rawValue.trim();
+    if (!raw) {
+      await this.panel.webview.postMessage({
+        type: "replyError",
+        message: "回复内容不能为空。"
+      });
+      return;
+    }
+    if (configuration.get<boolean>("confirmBeforeReply", true)) {
+      const choice = await vscode.window.showWarningMessage(
+        replyToPostNumber
+          ? `确认发布对 #${replyToPostNumber} 的回复？`
+          : "确认将这段内容回复到当前话题？",
+        { modal: true },
+        "确认发布"
+      );
+      if (choice !== "确认发布") {
+        return;
+      }
+    }
+
+    this.replying = true;
+    await this.panel.webview.postMessage({ type: "replyBusy", value: true });
+    try {
+      const response = await this.client.createReply(
+        this.topic.id,
+        raw,
+        typeof replyToPostNumber === "number" ? replyToPostNumber : undefined
+      );
+      const created =
+        response.post ??
+        (typeof response.id === "number" &&
+        typeof response.post_number === "number" &&
+        typeof response.cooked === "string"
+          ? (response as Post)
+          : undefined);
+      if (created) {
+        this.loadedPostIds.add(created.id);
+        this.detail?.post_stream.stream.push(created.id);
+        if (this.detail) {
+          this.detail.posts_count = Math.max(this.detail.posts_count + 1, created.post_number);
+        }
+        await this.panel.webview.postMessage({
+          type: "replyCreated",
+          html: postHtml(created),
+          postNumber: created.post_number
+        });
+      } else {
+        await this.panel.webview.postMessage({
+          type: "replySubmitted",
+          message:
+            response.action === "enqueued"
+              ? "回复已提交，正在等待站点审核。"
+              : "回复已提交。"
+        });
+      }
+    } catch (error) {
+      await this.panel.webview.postMessage({
+        type: "replyError",
+        message: toMessage(error)
+      });
+    } finally {
+      this.replying = false;
+      await this.panel.webview.postMessage({ type: "replyBusy", value: false });
     }
   }
 
@@ -1176,6 +1413,8 @@ class SettingsPanel {
       "previewImagesInVscode",
       "autoLoadPosts",
       "showTopicHeader",
+      "enableInteractions",
+      "confirmBeforeReply",
       "disguiseOnOpen",
       "disguiseFileName",
       "hideSidebarWhenDisguised",
@@ -1665,6 +1904,13 @@ function absoluteUrl(value: string | undefined): string {
 function postHtml(post: Post): string {
   const displayName = post.name?.trim() || post.username;
   const replyTo = post.reply_to_post_number ?? "";
+  const interactionsEnabled = vscode.workspace
+    .getConfiguration("linuxDoReader")
+    .get<boolean>("enableInteractions", true);
+  const likeAction = post.actions_summary?.find((action) => action.id === 2);
+  const liked = Boolean(likeAction?.acted);
+  const likeCount = likeAction?.count ?? 0;
+  const canLike = likeAction?.can_act !== false || liked;
   const replyUser = post.reply_to_user
     ? `<span class="reply-target">↳ ${escapeHtml(
         post.reply_to_user.name?.trim() || `@${post.reply_to_user.username}`
@@ -1679,6 +1925,19 @@ function postHtml(post: Post): string {
       <time datetime="${escapeHtml(post.created_at)}">${escapeHtml(formatDate(post.created_at))}</time>
     </header>
     <div class="post-body">${cleanPostHtml(post.cooked)}</div>
+    ${
+      interactionsEnabled
+        ? `<footer class="post-actions">
+      <button class="post-action like-action${liked ? " is-active" : ""}" type="button"
+        data-action="toggle-like" data-liked="${liked}" data-count="${likeCount}"
+        ${canLike ? "" : 'disabled title="当前帖子不可点赞"'}>♥ ${liked ? "已赞" : "赞"}${
+          likeCount ? ` ${likeCount}` : ""
+        }</button>
+      <button class="post-action reply-action" type="button" data-action="reply"
+        data-username="${escapeHtml(post.username)}">回复</button>
+    </footer>`
+        : ""
+    }
     <div class="post-children"></div>
   </article>`;
 }
@@ -1773,6 +2032,61 @@ function sharedStyle(): string {
     .post-body p:first-child { margin-top: 0; }
     .post-body p:last-child { margin-bottom: 0; }
     .post-body img { max-width: 100%; height: auto; border-radius: 4px; }
+    .post-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .post-action {
+      padding: 2px 8px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      border: 1px solid var(--vscode-panel-border);
+      font-size: 12px;
+    }
+    .post-action:hover {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-hoverBackground);
+    }
+    .post-action.is-active { color: var(--vscode-testing-iconPassed); }
+    body.no-reply .reply-action { display: none; }
+    .reply-composer {
+      position: sticky;
+      bottom: 10px;
+      z-index: 4;
+      margin-top: 16px;
+      padding: 12px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      box-shadow: 0 8px 28px var(--vscode-widget-shadow);
+    }
+    .reply-composer[hidden] { display: none; }
+    .reply-composer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-weight: 650;
+    }
+    .reply-composer textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 8px 10px;
+      resize: vertical;
+      color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      font: 13px/1.55 var(--vscode-editor-font-family);
+    }
+    .reply-composer-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .reply-composer-status { color: var(--vscode-descriptionForeground); }
     a { color: var(--vscode-textLink-foreground); text-decoration: none; }
     a:hover { text-decoration: underline; }
     blockquote {
@@ -1858,6 +2172,8 @@ function sharedStyle(): string {
     body.disguise .post-body p::before { content: "/* "; color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
     body.disguise .post-body p::after { content: " */"; color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
     body.disguise .post-body img,
+    body.disguise .post-actions,
+    body.disguise .reply-composer,
     body.disguise .load-wrap { display: none; }
   `;
 }
@@ -1875,12 +2191,22 @@ function topicHtml(
   const showTopicHeader = configuration.get<boolean>("showTopicHeader", true);
   const autoLoadPosts = configuration.get<boolean>("autoLoadPosts", true);
   const previewImages = configuration.get<boolean>("previewImagesInVscode", true);
+  const interactionsEnabled = configuration.get<boolean>("enableInteractions", true);
+  const canReply = interactionsEnabled && topic.details?.can_create_post !== false;
   const quickActions = new Set(
-    configuration.get<string[]>("quickActions", ["disguise", "openOriginal", "settings"])
+    configuration.get<string[]>("quickActions", [
+      "disguise",
+      "reply",
+      "openOriginal",
+      "settings"
+    ])
   );
   const actionButtons = [
     quickActions.has("disguise")
       ? `<button id="toggle-disguise" type="button">${disguised ? "退出伪装" : "伪装代码"}</button>`
+      : "",
+    quickActions.has("reply") && canReply
+      ? '<button id="reply-topic" type="button">回复话题</button>'
       : "",
     quickActions.has("openOriginal")
       ? '<button id="open-original" type="button">浏览器打开</button>'
@@ -1891,6 +2217,7 @@ function topicHtml(
   ].join("");
   const bodyClasses = [
     showTopicHeader ? "" : "hide-topic-header",
+    canReply ? "" : "no-reply",
     disguised ? "disguise" : ""
   ]
     .filter(Boolean)
@@ -1918,6 +2245,22 @@ function topicHtml(
       <span id="status" class="status"></span>
     </div>
     <div id="load-sentinel" aria-hidden="true"></div>
+    ${
+      canReply
+        ? `<section id="reply-composer" class="reply-composer" hidden>
+      <div class="reply-composer-head">
+        <span id="reply-title">回复话题</span>
+        <button id="reply-close" type="button" title="关闭">×</button>
+      </div>
+      <textarea id="reply-content" maxlength="32000" placeholder="支持 Markdown。回复将使用当前专用 Chrome 中登录的 Linux.do 账号发布。"></textarea>
+      <div class="reply-composer-actions">
+        <button id="reply-submit" type="button">发布回复</button>
+        <button id="reply-cancel" type="button">取消</button>
+        <span id="reply-status" class="reply-composer-status"></span>
+      </div>
+    </section>`
+        : ""
+    }
     <div id="image-preview" class="image-preview" hidden role="dialog" aria-modal="true" aria-label="图片预览">
       <button id="image-preview-close" class="image-preview-close" type="button" aria-label="关闭">×</button>
       <img id="image-preview-content" alt="">
@@ -1932,6 +2275,30 @@ function topicHtml(
       let loading = false;
       const imagePreview = document.getElementById("image-preview");
       const imagePreviewContent = document.getElementById("image-preview-content");
+      const replyComposer = document.getElementById("reply-composer");
+      const replyContent = document.getElementById("reply-content");
+      const replyTitle = document.getElementById("reply-title");
+      const replySubmit = document.getElementById("reply-submit");
+      const replyStatus = document.getElementById("reply-status");
+      let replyToPostNumber;
+      function openReplyComposer(postNumber, username) {
+        if (!replyComposer) return;
+        replyToPostNumber = postNumber;
+        replyTitle.textContent = postNumber
+          ? "回复 @" + username + " · #" + postNumber
+          : "回复话题";
+        replyStatus.textContent = "";
+        replyComposer.hidden = false;
+        replyContent.focus();
+        replyComposer.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+      function closeReplyComposer(clear = false) {
+        if (!replyComposer) return;
+        replyComposer.hidden = true;
+        replyToPostNumber = undefined;
+        replyStatus.textContent = "";
+        if (clear) replyContent.value = "";
+      }
       function closeImagePreview() {
         imagePreview.hidden = true;
         imagePreviewContent.removeAttribute("src");
@@ -1968,6 +2335,23 @@ function topicHtml(
       document.getElementById("open-settings")?.addEventListener("click", () => {
         vscode.postMessage({ type: "openSettings" });
       });
+      document.getElementById("reply-topic")?.addEventListener("click", () => {
+        openReplyComposer();
+      });
+      document.getElementById("reply-close")?.addEventListener("click", () => {
+        closeReplyComposer();
+      });
+      document.getElementById("reply-cancel")?.addEventListener("click", () => {
+        closeReplyComposer();
+      });
+      replySubmit?.addEventListener("click", () => {
+        const raw = replyContent.value.trim();
+        if (!raw) {
+          replyStatus.textContent = "请先输入回复内容。";
+          return;
+        }
+        vscode.postMessage({ type: "submitReply", raw, replyToPostNumber });
+      });
       function requestMore() {
         if (!loading && hasMore && !document.body.classList.contains("disguise")) {
           vscode.postMessage({ type: "loadMore" });
@@ -1981,6 +2365,24 @@ function topicHtml(
         observer.observe(document.getElementById("load-sentinel"));
       }
       document.addEventListener("click", (event) => {
+        const action = event.target.closest("[data-action]");
+        if (action?.dataset.action === "toggle-like") {
+          const post = action.closest(".post");
+          if (!post || action.disabled) return;
+          vscode.postMessage({
+            type: "toggleLike",
+            postId: Number(post.dataset.postId),
+            liked: action.dataset.liked === "true",
+            count: Number(action.dataset.count || 0)
+          });
+          return;
+        }
+        if (action?.dataset.action === "reply") {
+          const post = action.closest(".post");
+          if (!post) return;
+          openReplyComposer(Number(post.dataset.postNumber), action.dataset.username || "");
+          return;
+        }
         const postImage = event.target.closest(".post-body img");
         if (postImage && previewImages) {
           event.preventDefault();
@@ -2017,6 +2419,44 @@ function topicHtml(
         } else if (message.type === "loadError") {
           status.textContent = message.message;
           status.className = "status error";
+        } else if (message.type === "likeBusy") {
+          const button = document.querySelector(
+            '.post[data-post-id="' + message.postId + '"] [data-action="toggle-like"]'
+          );
+          if (button) button.disabled = message.value;
+        } else if (message.type === "likeUpdated") {
+          const button = document.querySelector(
+            '.post[data-post-id="' + message.postId + '"] [data-action="toggle-like"]'
+          );
+          if (button) {
+            button.dataset.liked = String(message.liked);
+            button.dataset.count = String(message.count);
+            button.classList.toggle("is-active", message.liked);
+            button.textContent =
+              "♥ " + (message.liked ? "已赞" : "赞") + (message.count ? " " + message.count : "");
+          }
+        } else if (message.type === "actionError") {
+          status.textContent = message.message;
+          status.className = "status error";
+        } else if (message.type === "replyBusy") {
+          if (replySubmit) replySubmit.disabled = message.value;
+          if (replyContent) replyContent.disabled = message.value;
+          if (replyStatus) replyStatus.textContent = message.value ? "正在发布…" : "";
+        } else if (message.type === "replyCreated") {
+          document.getElementById("posts").insertAdjacentHTML("beforeend", message.html);
+          arrangeReplies();
+          closeReplyComposer(true);
+          status.className = "status";
+          status.textContent = "回复已发布 · #" + message.postNumber;
+        } else if (message.type === "replySubmitted") {
+          closeReplyComposer(true);
+          status.className = "status";
+          status.textContent = message.message;
+        } else if (message.type === "replyError") {
+          if (replyStatus) {
+            replyStatus.textContent = message.message;
+            replyStatus.className = "reply-composer-status error";
+          }
         } else if (message.type === "disguise") {
           document.body.classList.toggle("disguise", message.value);
           const disguiseButton = document.getElementById("toggle-disguise");
@@ -2052,7 +2492,12 @@ function settingsHtml(webview: vscode.Webview): string {
   const checked = (key: string, fallback: boolean): string =>
     configuration.get<boolean>(key, fallback) ? " checked" : "";
   const quickActions = new Set(
-    configuration.get<string[]>("quickActions", ["disguise", "openOriginal", "settings"])
+    configuration.get<string[]>("quickActions", [
+      "disguise",
+      "reply",
+      "openOriginal",
+      "settings"
+    ])
   );
   const fileName = configuration.get<string>("disguiseFileName", "workspace-utils.ts");
   const chromePath = configuration.get<string>("chromePath", "");
@@ -2197,6 +2642,19 @@ function settingsHtml(webview: vscode.Webview): string {
         </label>
       </fieldset>
       <fieldset>
+        <legend>互动</legend>
+        <label class="option">
+          <input id="enableInteractions" type="checkbox"${checked("enableInteractions", true)}>
+          <span>显示回复和点赞</span>
+          <small>所有互动都需要手动点击，并使用专用 Chrome 当前登录的 Linux.do 账号。</small>
+        </label>
+        <label class="option">
+          <input id="confirmBeforeReply" type="checkbox"${checked("confirmBeforeReply", true)}>
+          <span>发布回复前二次确认</span>
+          <small>点击“发布回复”后，由 VS Code 再询问一次，避免误发。</small>
+        </label>
+      </fieldset>
+      <fieldset>
         <legend>代码伪装</legend>
         <label class="option">
           <input id="disguiseOnOpen" type="checkbox"${checked("disguiseOnOpen", false)}>
@@ -2221,6 +2679,12 @@ function settingsHtml(webview: vscode.Webview): string {
             quickActions.has("disguise") ? " checked" : ""
           }>
           <span>伪装代码</span>
+        </label>
+        <label class="option">
+          <input name="quickAction" value="reply" type="checkbox"${
+            quickActions.has("reply") ? " checked" : ""
+          }>
+          <span>回复话题</span>
         </label>
         <label class="option">
           <input name="quickAction" value="openOriginal" type="checkbox"${
@@ -2256,6 +2720,8 @@ function settingsHtml(webview: vscode.Webview): string {
           "previewImagesInVscode",
           "autoLoadPosts",
           "showTopicHeader",
+          "enableInteractions",
+          "confirmBeforeReply",
           "disguiseOnOpen",
           "hideSidebarWhenDisguised"
         ];
