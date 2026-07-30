@@ -24,3 +24,13 @@
 - Use the neutral label "Linux.do 设置" for configuration surfaces.
 - Keep informal product intent out of settings titles, commands, view names,
   and configuration-page headings.
+
+## Settings UI must reflect persisted state
+
+- A checked control in a custom Webview is only local form state until the
+  extension persists it with `WorkspaceConfiguration.update`.
+- Settings that immediately affect visible behavior should auto-save or show a
+  clear unsaved state; do not let a checked box look active while the runtime
+  still reads its default value.
+- When diagnosing a custom settings page, verify the effective VS Code
+  configuration instead of relying on the checkbox appearance alone.
