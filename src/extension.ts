@@ -867,6 +867,14 @@ class TopicPanel {
     return panels.length;
   }
 
+  static async setAllPureCode(value: boolean): Promise<void> {
+    await Promise.all(
+      [...TopicPanel.panels.values()].map((panel) =>
+        panel.panel.webview.postMessage({ type: "pureCode", value })
+      )
+    );
+  }
+
   private constructor(
     private readonly client: LinuxDoClient,
     panel: vscode.WebviewPanel,
@@ -1185,6 +1193,15 @@ class TopicsPagePanel {
     return 1;
   }
 
+  static async setAllPureCode(value: boolean): Promise<void> {
+    if (TopicsPagePanel.instance) {
+      await TopicsPagePanel.instance.panel.webview.postMessage({
+        type: "pureCode",
+        value
+      });
+    }
+  }
+
   private constructor(
     private readonly client: LinuxDoClient,
     private readonly browser: BrowserSession,
@@ -1497,7 +1514,9 @@ class SettingsPanel {
         await vscode.commands.executeCommand("workbench.action.reloadWindow");
       }
     } else {
-      void vscode.window.showInformationMessage("Linux.do 设置已保存，新打开的话题会使用新设置。");
+      void vscode.window.showInformationMessage(
+        "Linux.do 设置已保存。纯代码伪装会立即同步，其他阅读布局在新打开的话题中生效。"
+      );
     }
   }
 }
@@ -1531,6 +1550,18 @@ export function activate(context: vscode.ExtensionContext): void {
     browser,
     client,
     tree,
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("linuxDoReader.pureCodeDisguise")) {
+        return;
+      }
+      const value = vscode.workspace
+        .getConfiguration("linuxDoReader")
+        .get<boolean>("pureCodeDisguise", false);
+      void Promise.all([
+        TopicPanel.setAllPureCode(value),
+        TopicsPagePanel.setAllPureCode(value)
+      ]);
+    }),
     tree.onDidChangeVisibility((event) => {
       if (event.visible && placement === "editor") {
         void TopicsPagePanel.show(client, browser);
@@ -1637,9 +1668,14 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("linuxDoReader.toggleDisguise", async () => {
       globalDisguised = !globalDisguised;
+      const pureCode = vscode.workspace
+        .getConfiguration("linuxDoReader")
+        .get<boolean>("pureCodeDisguise", false);
       const [topicCount, listCount] = await Promise.all([
         TopicPanel.setAllDisguised(globalDisguised),
-        TopicsPagePanel.setAllDisguised(globalDisguised)
+        TopicsPagePanel.setAllDisguised(globalDisguised),
+        TopicPanel.setAllPureCode(pureCode),
+        TopicsPagePanel.setAllPureCode(pureCode)
       ]);
       const hideSidebar = vscode.workspace
         .getConfiguration("linuxDoReader")
@@ -2594,6 +2630,8 @@ function topicHtml(
           document.body.classList.toggle("disguise", message.value);
           const disguiseButton = document.getElementById("toggle-disguise");
           if (disguiseButton) disguiseButton.textContent = message.value ? "退出伪装" : "伪装代码";
+        } else if (message.type === "pureCode") {
+          document.body.classList.toggle("pure-code", message.value);
         }
       });
     </script>
@@ -3224,6 +3262,8 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
           document.body.classList.toggle("disguise", message.value);
           document.getElementById("toggle-list-disguise").textContent =
             message.value ? "{}" : "伪装";
+        } else if (message.type === "pureCode") {
+          document.body.classList.toggle("pure-code", message.value);
         }
       });
       vscode.postMessage({ type: "ready" });

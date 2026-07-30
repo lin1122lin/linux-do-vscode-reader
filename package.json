@@ -2,7 +2,7 @@
   "name": "linux-do-reader",
   "displayName": "Linux.do 阅读器",
   "description": "在 VS Code 中以紧凑、低干扰布局浏览 Linux.do。",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "local",
   "license": "MIT",
   "homepage": "https://github.com/lin1122lin/linux-do-vscode-reader#readme",
