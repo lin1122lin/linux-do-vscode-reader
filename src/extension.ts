@@ -2044,9 +2044,135 @@ export class TaskQueue<T> extends EventEmitter {
     return removed;
   }
 }`;
-  return `<pre class="pure-code-cover" aria-label="代码伪装内容"><code>${escapeHtml(
-    code
-  )}</code></pre>`;
+  const lines = code
+    .split("\n")
+    .map(
+      (line, index) => `<div class="code-line">
+        <span class="code-line-number">${index + 1}</span>
+        <span class="code-line-text">${highlightTypeScriptLine(line)}</span>
+      </div>`
+    )
+    .join("");
+  return `<div class="pure-code-cover" aria-label="TypeScript 文件内容">${lines}</div>`;
+}
+
+function highlightTypeScriptLine(line: string): string {
+  const keywords = new Set([
+    "async",
+    "await",
+    "class",
+    "const",
+    "continue",
+    "export",
+    "extends",
+    "for",
+    "if",
+    "import",
+    "in",
+    "interface",
+    "let",
+    "new",
+    "private",
+    "readonly",
+    "return",
+    "type"
+  ]);
+  const primitiveTypes = new Set(["number", "string", "void"]);
+  let result = "";
+  let index = 0;
+  while (index < line.length) {
+    const character = line[index];
+    if (character === "/" && line[index + 1] === "/") {
+      result += `<span class="token-comment">${escapeHtml(line.slice(index))}</span>`;
+      break;
+    }
+    if (character === '"' || character === "'") {
+      const quote = character;
+      let end = index + 1;
+      while (end < line.length) {
+        if (line[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        end += 1;
+        if (line[end - 1] === quote) {
+          break;
+        }
+      }
+      result += `<span class="token-string">${escapeHtml(line.slice(index, end))}</span>`;
+      index = end;
+      continue;
+    }
+    if (/[0-9]/.test(character)) {
+      let end = index + 1;
+      while (end < line.length && /[0-9_]/.test(line[end])) {
+        end += 1;
+      }
+      result += `<span class="token-number">${escapeHtml(line.slice(index, end))}</span>`;
+      index = end;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(character)) {
+      let end = index + 1;
+      while (end < line.length && /[A-Za-z0-9_$]/.test(line[end])) {
+        end += 1;
+      }
+      const word = line.slice(index, end);
+      const next = line.slice(end).trimStart()[0];
+      const className = keywords.has(word)
+        ? "token-keyword"
+        : primitiveTypes.has(word) || /^[A-Z]/.test(word)
+          ? "token-type"
+          : next === "("
+            ? "token-function"
+            : "token-identifier";
+      result += `<span class="${className}">${escapeHtml(word)}</span>`;
+      index = end;
+      continue;
+    }
+    result += escapeHtml(character);
+    index += 1;
+  }
+  return result || "&nbsp;";
+}
+
+function pureCodeStyle(padding: string): string {
+  return `
+    .pure-code-cover {
+      display: none;
+      margin: 0;
+      padding: ${padding};
+      overflow: auto;
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
+      border: 0;
+      font: var(--vscode-editor-font-size)/1.55 var(--vscode-editor-font-family);
+      tab-size: 2;
+    }
+    .code-line {
+      display: grid;
+      grid-template-columns: 52px minmax(max-content, 1fr);
+      min-height: 1.55em;
+    }
+    .code-line:hover { background: var(--vscode-editor-hoverHighlightBackground); }
+    .code-line-number {
+      padding-right: 14px;
+      color: var(--vscode-editorLineNumber-foreground);
+      text-align: right;
+      user-select: none;
+    }
+    .code-line-text {
+      padding-left: 14px;
+      white-space: pre;
+    }
+    .token-keyword { color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
+    .token-type { color: var(--vscode-symbolIcon-classForeground, #4ec9b0); }
+    .token-string { color: var(--vscode-symbolIcon-stringForeground, #ce9178); }
+    .token-number { color: var(--vscode-symbolIcon-numberForeground, #b5cea8); }
+    .token-function { color: var(--vscode-symbolIcon-functionForeground, #dcdcaa); }
+    .token-comment { color: var(--vscode-editorLineNumber-foreground, #6a9955); }
+    .token-identifier { color: var(--vscode-editor-foreground); }
+  `;
 }
 
 function postHtml(post: Post): string {
@@ -2180,17 +2306,7 @@ function sharedStyle(): string {
     .post-body p:first-child { margin-top: 0; }
     .post-body p:last-child { margin-bottom: 0; }
     .post-body img { max-width: 100%; height: auto; border-radius: 4px; }
-    .pure-code-cover {
-      display: none;
-      margin: 0;
-      padding: 4px 0;
-      overflow: visible;
-      color: var(--vscode-editor-foreground);
-      background: transparent;
-      border: 0;
-      font: var(--vscode-editor-font-size)/1.55 var(--vscode-editor-font-family);
-      white-space: pre;
-    }
+    ${pureCodeStyle("4px 0")}
     .post-actions {
       display: flex;
       gap: 6px;
@@ -3028,17 +3144,7 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
         background: var(--vscode-inputValidation-errorBackground);
       }
       .error button { margin-top: 10px; }
-      .pure-code-cover {
-        display: none;
-        margin: 0;
-        padding: 18px 42px 60px 22px;
-        overflow: visible;
-        color: var(--vscode-editor-foreground);
-        background: transparent;
-        border: 0;
-        font: var(--vscode-editor-font-size)/1.55 var(--vscode-editor-font-family);
-        white-space: pre;
-      }
+      ${pureCodeStyle("18px 0 60px")}
       [hidden] { display: none !important; }
       body.disguise {
         font-family: var(--vscode-editor-font-family);
