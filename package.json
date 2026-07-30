@@ -2,7 +2,7 @@
   "name": "linux-do-reader",
   "displayName": "Linux.do 阅读器",
   "description": "在 VS Code 中以紧凑、低干扰布局浏览 Linux.do。",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "local",
   "license": "MIT",
   "homepage": "https://github.com/lin1122lin/linux-do-vscode-reader#readme",
@@ -54,6 +54,14 @@
       {
         "command": "linuxDoReader.showHot",
         "title": "Linux.do：热门"
+      },
+      {
+        "command": "linuxDoReader.showUnread",
+        "title": "Linux.do：未读"
+      },
+      {
+        "command": "linuxDoReader.showNew",
+        "title": "Linux.do：新话题"
       },
       {
         "command": "linuxDoReader.selectCategory",
@@ -135,6 +143,16 @@
           "group": "1_filter@2"
         },
         {
+          "command": "linuxDoReader.showUnread",
+          "when": "view == linuxDoReader.topics",
+          "group": "1_filter@3"
+        },
+        {
+          "command": "linuxDoReader.showNew",
+          "when": "view == linuxDoReader.topics",
+          "group": "1_filter@4"
+        },
+        {
           "command": "linuxDoReader.openSettingsPanel",
           "when": "view == linuxDoReader.topics",
           "group": "2_session@1"
@@ -210,6 +228,11 @@
           "type": "boolean",
           "default": false,
           "description": "打开话题时立即使用代码伪装。"
+        },
+        "linuxDoReader.pureCodeDisguise": {
+          "type": "boolean",
+          "default": false,
+          "description": "代码伪装时完全隐藏话题内容，只显示普通 TypeScript 代码。"
         },
         "linuxDoReader.disguiseFileName": {
           "type": "string",

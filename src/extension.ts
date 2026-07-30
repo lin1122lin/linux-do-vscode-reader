@@ -521,6 +521,14 @@ class LinuxDoClient implements vscode.Disposable {
     return topicsPage(payload);
   }
 
+  async getUnread(page = 0): Promise<TopicsPage> {
+    return this.getPersonalTopics("unread", page);
+  }
+
+  async getNewTopics(page = 0): Promise<TopicsPage> {
+    return this.getPersonalTopics("new", page);
+  }
+
   async getCategoryLatest(category: Category, page = 0): Promise<TopicsPage> {
     const payload = await this.request<{
       topic_list?: { topics?: TopicSummary[]; more_topics_url?: string };
@@ -598,6 +606,16 @@ class LinuxDoClient implements vscode.Disposable {
     });
   }
 
+  private async getPersonalTopics(
+    filter: "unread" | "new",
+    page: number
+  ): Promise<TopicsPage> {
+    const payload = await this.request<{
+      topic_list?: { topics?: TopicSummary[]; more_topics_url?: string };
+    }>(`/${filter}.json?no_definitions=true&page=${page}`);
+    return topicsPage(payload);
+  }
+
   private async request<T>(path: string, cookieOverride?: string): Promise<T> {
     if (cookieOverride) {
       throw new LinuxDoError("0.3.0 起不再使用复制 Cookie，请连接专用 Chrome。");
@@ -606,7 +624,7 @@ class LinuxDoClient implements vscode.Disposable {
   }
 }
 
-type TopicMode = "latest" | "hot" | "search";
+type TopicMode = "latest" | "hot" | "unread" | "new" | "search";
 
 class TopicItem extends vscode.TreeItem {
   constructor(readonly topic: TopicSummary) {
@@ -683,6 +701,20 @@ class TopicsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     await this.refresh();
   }
 
+  async showUnread(): Promise<void> {
+    this.mode = "unread";
+    this.query = "";
+    this.category = undefined;
+    await this.refresh();
+  }
+
+  async showNew(): Promise<void> {
+    this.mode = "new";
+    this.query = "";
+    this.category = undefined;
+    await this.refresh();
+  }
+
   async showSearch(query: string): Promise<void> {
     this.mode = "search";
     this.query = query;
@@ -704,7 +736,16 @@ class TopicsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (this.mode === "search") {
       return `搜索：${this.query}`;
     }
-    return this.mode === "hot" ? "每日热门" : "最新";
+    if (this.mode === "hot") {
+      return "每日热门";
+    }
+    if (this.mode === "unread") {
+      return "未读";
+    }
+    if (this.mode === "new") {
+      return "新话题";
+    }
+    return "最新";
   }
 
   getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -751,7 +792,11 @@ class TopicsProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           ? await this.client.getLatest(this.nextPage)
           : this.mode === "hot"
             ? await this.client.getHot(this.nextPage)
-            : await this.client.search(this.query, this.nextPage);
+            : this.mode === "unread"
+              ? await this.client.getUnread(this.nextPage)
+              : this.mode === "new"
+                ? await this.client.getNewTopics(this.nextPage)
+                : await this.client.search(this.query, this.nextPage);
       const currentIds = new Set((this.topics ?? []).map((topic) => topic.id));
       const additions = page.topics.filter((topic) => !currentIds.has(topic.id));
       this.topics = [...(this.topics ?? []), ...additions];
@@ -1180,7 +1225,13 @@ class TopicsPagePanel {
       await this.initialize();
     } else if (value.type === "loadMore" && this.initialized) {
       await this.loadNextPage();
-    } else if (value.type === "mode" && (value.mode === "latest" || value.mode === "hot")) {
+    } else if (
+      value.type === "mode" &&
+      (value.mode === "latest" ||
+        value.mode === "hot" ||
+        value.mode === "unread" ||
+        value.mode === "new")
+    ) {
       await this.setMode(value.mode);
     } else if (value.type === "search" && typeof value.query === "string") {
       await this.setMode("search", value.query.trim());
@@ -1255,7 +1306,11 @@ class TopicsPagePanel {
           ? await this.client.getLatest(this.nextPage)
           : this.mode === "hot"
             ? await this.client.getHot(this.nextPage)
-            : await this.client.search(this.query, this.nextPage);
+            : this.mode === "unread"
+              ? await this.client.getUnread(this.nextPage)
+              : this.mode === "new"
+                ? await this.client.getNewTopics(this.nextPage)
+                : await this.client.search(this.query, this.nextPage);
       const additions = page.topics.filter((topic) => !this.topics.has(topic.id));
       for (const topic of additions) {
         this.topics.set(topic.id, topic);
@@ -1416,6 +1471,7 @@ class SettingsPanel {
       "enableInteractions",
       "confirmBeforeReply",
       "disguiseOnOpen",
+      "pureCodeDisguise",
       "disguiseFileName",
       "hideSidebarWhenDisguised",
       "quickActions"
@@ -1506,6 +1562,16 @@ export function activate(context: vscode.ExtensionContext): void {
       sidebarProvider
         ? updateSidebar(() => sidebarProvider.showHot())
         : TopicsPagePanel.show(client, browser, "hot")
+    ),
+    vscode.commands.registerCommand("linuxDoReader.showUnread", () =>
+      sidebarProvider
+        ? updateSidebar(() => sidebarProvider.showUnread())
+        : TopicsPagePanel.show(client, browser, "unread")
+    ),
+    vscode.commands.registerCommand("linuxDoReader.showNew", () =>
+      sidebarProvider
+        ? updateSidebar(() => sidebarProvider.showNew())
+        : TopicsPagePanel.show(client, browser, "new")
     ),
     vscode.commands.registerCommand("linuxDoReader.loadMoreTopics", () =>
       sidebarProvider
@@ -1901,6 +1967,52 @@ function absoluteUrl(value: string | undefined): string {
   }
 }
 
+function pureCodeCoverHtml(): string {
+  const code = `import { EventEmitter } from "node:events";
+
+type TaskState = "idle" | "running" | "complete";
+
+interface Task<T> {
+  readonly id: string;
+  readonly input: T;
+  state: TaskState;
+}
+
+export class TaskQueue<T> extends EventEmitter {
+  private readonly pending = new Map<string, Task<T>>();
+
+  enqueue(id: string, input: T): Task<T> {
+    const task: Task<T> = { id, input, state: "idle" };
+    this.pending.set(id, task);
+    this.emit("queued", task);
+    return task;
+  }
+
+  async run(handler: (input: T) => Promise<void>): Promise<void> {
+    for (const task of this.pending.values()) {
+      if (task.state !== "idle") continue;
+      task.state = "running";
+      await handler(task.input);
+      task.state = "complete";
+      this.emit("complete", task.id);
+    }
+  }
+
+  clearCompleted(): number {
+    let removed = 0;
+    for (const [id, task] of this.pending) {
+      if (task.state !== "complete") continue;
+      this.pending.delete(id);
+      removed += 1;
+    }
+    return removed;
+  }
+}`;
+  return `<pre class="pure-code-cover" aria-label="代码伪装内容"><code>${escapeHtml(
+    code
+  )}</code></pre>`;
+}
+
 function postHtml(post: Post): string {
   const displayName = post.name?.trim() || post.username;
   const replyTo = post.reply_to_post_number ?? "";
@@ -2032,6 +2144,17 @@ function sharedStyle(): string {
     .post-body p:first-child { margin-top: 0; }
     .post-body p:last-child { margin-bottom: 0; }
     .post-body img { max-width: 100%; height: auto; border-radius: 4px; }
+    .pure-code-cover {
+      display: none;
+      margin: 0;
+      padding: 4px 0;
+      overflow: visible;
+      color: var(--vscode-editor-foreground);
+      background: transparent;
+      border: 0;
+      font: var(--vscode-editor-font-size)/1.55 var(--vscode-editor-font-family);
+      white-space: pre;
+    }
     .post-actions {
       display: flex;
       gap: 6px;
@@ -2175,6 +2298,13 @@ function sharedStyle(): string {
     body.disguise .post-actions,
     body.disguise .reply-composer,
     body.disguise .load-wrap { display: none; }
+    body.disguise.pure-code .topic-head,
+    body.disguise.pure-code main#posts,
+    body.disguise.pure-code .load-wrap,
+    body.disguise.pure-code #load-sentinel,
+    body.disguise.pure-code .reply-composer,
+    body.disguise.pure-code .image-preview { display: none !important; }
+    body.disguise.pure-code .pure-code-cover { display: block; }
   `;
 }
 
@@ -2191,6 +2321,7 @@ function topicHtml(
   const showTopicHeader = configuration.get<boolean>("showTopicHeader", true);
   const autoLoadPosts = configuration.get<boolean>("autoLoadPosts", true);
   const previewImages = configuration.get<boolean>("previewImagesInVscode", true);
+  const pureCodeDisguise = configuration.get<boolean>("pureCodeDisguise", false);
   const interactionsEnabled = configuration.get<boolean>("enableInteractions", true);
   const canReply = interactionsEnabled && topic.details?.can_create_post !== false;
   const quickActions = new Set(
@@ -2218,6 +2349,7 @@ function topicHtml(
   const bodyClasses = [
     showTopicHeader ? "" : "hide-topic-header",
     canReply ? "" : "no-reply",
+    pureCodeDisguise ? "pure-code" : "",
     disguised ? "disguise" : ""
   ]
     .filter(Boolean)
@@ -2232,6 +2364,7 @@ function topicHtml(
     <style nonce="${token}">${sharedStyle()}</style>
   </head>
   <body class="${bodyClasses}">
+    ${pureCodeCoverHtml()}
     <header class="topic-head">
       <h1>${escapeHtml(title)}</h1>
       <div class="topic-actions">
@@ -2662,6 +2795,11 @@ function settingsHtml(webview: vscode.Webview): string {
           <small>使用等宽字体、注释和语法配色显示帖子。</small>
         </label>
         <label class="option">
+          <input id="pureCodeDisguise" type="checkbox"${checked("pureCodeDisguise", false)}>
+          <span>伪装时只显示纯代码</span>
+          <small>开启后完全隐藏话题标题、列表和正文，改为显示一段普通 TypeScript 代码。</small>
+        </label>
+        <label class="option">
           <input id="hideSidebarWhenDisguised" type="checkbox"${checked(
             "hideSidebarWhenDisguised",
             false
@@ -2723,6 +2861,7 @@ function settingsHtml(webview: vscode.Webview): string {
           "enableInteractions",
           "confirmBeforeReply",
           "disguiseOnOpen",
+          "pureCodeDisguise",
           "hideSidebarWhenDisguised"
         ];
         const settings = {};
@@ -2754,6 +2893,15 @@ function settingsHtml(webview: vscode.Webview): string {
 
 function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
   const token = nonce();
+  const pureCodeDisguise = vscode.workspace
+    .getConfiguration("linuxDoReader")
+    .get<boolean>("pureCodeDisguise", false);
+  const bodyClasses = [
+    pureCodeDisguise ? "pure-code" : "",
+    disguised ? "disguise" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
   return `<!doctype html>
   <html lang="zh-CN">
   <head>
@@ -2783,7 +2931,7 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
         background: color-mix(in srgb, var(--vscode-editor-background) 94%, transparent);
         backdrop-filter: blur(8px);
       }
-      .modes { display: flex; gap: 4px; }
+      .modes { display: flex; flex-wrap: wrap; gap: 4px; }
       button, select, input {
         color: var(--vscode-input-foreground);
         background: var(--vscode-input-background);
@@ -2839,6 +2987,17 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
         background: var(--vscode-inputValidation-errorBackground);
       }
       .error button { margin-top: 10px; }
+      .pure-code-cover {
+        display: none;
+        margin: 0;
+        padding: 18px 42px 60px 22px;
+        overflow: visible;
+        color: var(--vscode-editor-foreground);
+        background: transparent;
+        border: 0;
+        font: var(--vscode-editor-font-size)/1.55 var(--vscode-editor-font-family);
+        white-space: pre;
+      }
       [hidden] { display: none !important; }
       body.disguise {
         font-family: var(--vscode-editor-font-family);
@@ -2887,6 +3046,9 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
       }
       body.disguise .topic-tags { display: none; }
       body.disguise .status::before { content: "// "; }
+      body.disguise.pure-code main,
+      body.disguise.pure-code .error { display: none !important; }
+      body.disguise.pure-code .pure-code-cover { display: block; }
       @media (max-width: 720px) {
         .toolbar { grid-template-columns: 1fr; }
         .topic { grid-template-columns: 1fr; }
@@ -2894,11 +3056,13 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
       }
     </style>
   </head>
-  <body class="${disguised ? "disguise" : ""}">
+  <body class="${bodyClasses}">
     <header class="toolbar">
       <div class="modes">
         <button id="latest" type="button" class="active">最新</button>
         <button id="hot" type="button">热门</button>
+        <button id="unread" type="button">未读</button>
+        <button id="new-topics" type="button">新话题</button>
       </div>
       <form id="search-form" class="search">
         <input id="search-input" type="search" placeholder="搜索 Linux.do" aria-label="搜索">
@@ -2914,6 +3078,7 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
         <button id="settings" type="button" title="Linux.do 设置">设置</button>
       </div>
     </header>
+    ${pureCodeCoverHtml()}
     <div id="error" class="error" hidden>
       <div id="error-message"></div>
       <button id="connect-browser" type="button" hidden>打开专用 Chrome</button>
@@ -2934,6 +3099,7 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
       let loading = false;
       let hasMore = true;
       let initialized = false;
+      let currentMode = "latest";
       const readyTimer = setInterval(() => {
         if (!initialized) vscode.postMessage({ type: "ready" });
       }, 500);
@@ -2980,6 +3146,12 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
       document.getElementById("hot").addEventListener("click", () => {
         vscode.postMessage({ type: "mode", mode: "hot" });
       });
+      document.getElementById("unread").addEventListener("click", () => {
+        vscode.postMessage({ type: "mode", mode: "unread" });
+      });
+      document.getElementById("new-topics").addEventListener("click", () => {
+        vscode.postMessage({ type: "mode", mode: "new" });
+      });
       document.getElementById("search-form").addEventListener("submit", (event) => {
         event.preventDefault();
         const query = document.getElementById("search-input").value.trim();
@@ -3012,9 +3184,12 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
           clearInterval(readyTimer);
           topics.replaceChildren();
           hasMore = true;
+          currentMode = message.mode;
           errorBox.hidden = true;
           document.getElementById("latest").classList.toggle("active", message.mode === "latest");
           document.getElementById("hot").classList.toggle("active", message.mode === "hot");
+          document.getElementById("unread").classList.toggle("active", message.mode === "unread");
+          document.getElementById("new-topics").classList.toggle("active", message.mode === "new");
           document.getElementById("search-input").value = message.query || "";
           category.value = message.categoryId ? String(message.categoryId) : "";
         } else if (message.type === "categories") {
@@ -3027,7 +3202,15 @@ function topicsPageHtml(webview: vscode.Webview, disguised: boolean): string {
         } else if (message.type === "topics") {
           for (const topic of message.topics) topics.appendChild(topicElement(topic));
           hasMore = message.hasMore;
-          status.textContent = hasMore ? "继续向下滚动加载" : "已经到底了";
+          status.textContent = hasMore
+            ? "继续向下滚动加载"
+            : topics.childElementCount
+              ? "已经到底了"
+              : currentMode === "unread"
+                ? "目前没有未读话题"
+                : currentMode === "new"
+                  ? "目前没有新话题"
+                  : "暂无话题";
         } else if (message.type === "loading") {
           loading = message.value;
           if (loading) status.textContent = "正在加载…";
