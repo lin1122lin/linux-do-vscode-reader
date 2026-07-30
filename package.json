@@ -1,0 +1,255 @@
+{
+  "name": "linux-do-reader",
+  "displayName": "Linux.do 阅读器",
+  "description": "在 VS Code 中以紧凑、低干扰布局浏览 Linux.do。",
+  "version": "0.4.0",
+  "publisher": "local",
+  "license": "MIT",
+  "homepage": "https://github.com/lin1122lin/linux-do-vscode-reader#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lin1122lin/linux-do-vscode-reader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lin1122lin/linux-do-vscode-reader/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:linuxDoReader.topics",
+    "onCommand:linuxDoReader.openTopicsPage",
+    "onCommand:linuxDoReader.connectBrowser"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "linuxDoReader.openTopicsPage",
+        "title": "Linux.do：打开话题广场",
+        "icon": "$(window)"
+      },
+      {
+        "command": "linuxDoReader.connectBrowser",
+        "title": "Linux.do：连接 Chrome 登录",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "linuxDoReader.refresh",
+        "title": "Linux.do：刷新话题",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "linuxDoReader.search",
+        "title": "Linux.do：搜索",
+        "icon": "$(search)"
+      },
+      {
+        "command": "linuxDoReader.showLatest",
+        "title": "Linux.do：最新"
+      },
+      {
+        "command": "linuxDoReader.showHot",
+        "title": "Linux.do：热门"
+      },
+      {
+        "command": "linuxDoReader.selectCategory",
+        "title": "Linux.do：选择分类",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "linuxDoReader.toggleDisguise",
+        "title": "Linux.do：切换全局代码伪装"
+      },
+      {
+        "command": "linuxDoReader.openSettingsPanel",
+        "title": "Linux.do：设置",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "linuxDoReader.openSite",
+        "title": "Linux.do：在浏览器中打开"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "linuxDoReader",
+          "title": "Linux.do",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "linuxDoReader": [
+        {
+          "id": "linuxDoReader.topics",
+          "name": "Linux.do"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "linuxDoReader.topics",
+        "contents": "[打开话题广场](command:linuxDoReader.openTopicsPage)\n[连接 Chrome 登录](command:linuxDoReader.connectBrowser)\n[Linux.do 设置](command:linuxDoReader.openSettingsPanel)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "linuxDoReader.openTopicsPage",
+          "when": "view == linuxDoReader.topics",
+          "group": "navigation@1"
+        },
+        {
+          "command": "linuxDoReader.connectBrowser",
+          "when": "view == linuxDoReader.topics",
+          "group": "navigation@2"
+        },
+        {
+          "command": "linuxDoReader.refresh",
+          "when": "view == linuxDoReader.topics && config.linuxDoReader.topicListPlacement != editor",
+          "group": "navigation@3"
+        },
+        {
+          "command": "linuxDoReader.search",
+          "when": "view == linuxDoReader.topics && config.linuxDoReader.topicListPlacement != editor",
+          "group": "navigation@4"
+        },
+        {
+          "command": "linuxDoReader.selectCategory",
+          "when": "view == linuxDoReader.topics && config.linuxDoReader.topicListPlacement != editor",
+          "group": "navigation@5"
+        },
+        {
+          "command": "linuxDoReader.showLatest",
+          "when": "view == linuxDoReader.topics",
+          "group": "1_filter@1"
+        },
+        {
+          "command": "linuxDoReader.showHot",
+          "when": "view == linuxDoReader.topics",
+          "group": "1_filter@2"
+        },
+        {
+          "command": "linuxDoReader.openSettingsPanel",
+          "when": "view == linuxDoReader.topics",
+          "group": "2_session@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "linuxDoReader.toggleDisguise",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l"
+      }
+    ],
+    "configuration": {
+      "title": "Linux.do 阅读器",
+      "properties": {
+        "linuxDoReader.topicListPlacement": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "sidebar",
+            "both"
+          ],
+          "enumDescriptions": [
+            "话题广场显示为独立编辑器页面，左侧栏只显示入口。",
+            "话题列表直接显示在左侧栏，独立页面仍可通过命令打开。",
+            "左侧栏显示话题列表，同时保留独立话题广场。"
+          ],
+          "default": "editor",
+          "description": "选择话题列表主要显示位置。"
+        },
+        "linuxDoReader.chromePath": {
+          "type": "string",
+          "default": "",
+          "description": "Chrome 或 Edge 可执行文件路径。留空时自动检测。"
+        },
+        "linuxDoReader.compactMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "使用更紧凑的帖子布局。"
+        },
+        "linuxDoReader.showImages": {
+          "type": "boolean",
+          "default": true,
+          "description": "在阅读器中加载远程图片。"
+        },
+        "linuxDoReader.previewImagesInVscode": {
+          "type": "boolean",
+          "default": true,
+          "description": "点击帖子图片时在 VS Code 阅读器内放大预览。"
+        },
+        "linuxDoReader.autoLoadPosts": {
+          "type": "boolean",
+          "default": true,
+          "description": "正文滚动接近底部时自动加载下一批回复。"
+        },
+        "linuxDoReader.showTopicHeader": {
+          "type": "boolean",
+          "default": true,
+          "description": "在阅读器顶部显示话题标题栏。"
+        },
+        "linuxDoReader.disguiseOnOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "打开话题时立即使用代码伪装。"
+        },
+        "linuxDoReader.disguiseFileName": {
+          "type": "string",
+          "default": "workspace-utils.ts",
+          "description": "代码伪装时显示在编辑器标签页上的文件名。"
+        },
+        "linuxDoReader.hideSidebarWhenDisguised": {
+          "type": "boolean",
+          "default": false,
+          "description": "切换代码伪装时同时切换侧栏显示状态。"
+        },
+        "linuxDoReader.quickActions": {
+          "type": "array",
+          "default": [
+            "disguise",
+            "openOriginal",
+            "settings"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "disguise",
+              "openOriginal",
+              "settings"
+            ]
+          },
+          "description": "阅读器标题栏显示的快捷按钮。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "npm run check && npm run build && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "sanitize-html": "^2.17.0",
+    "undici": "^6.21.3",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/sanitize-html": "^2.16.0",
+    "@types/vscode": "^1.90.0",
+    "@types/ws": "^8.18.1",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

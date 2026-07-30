@@ -1,0 +1,12 @@
+.vscode/**
+.github/**
+.gitignore
+LESSONS.md
+src/**
+node_modules/**
+work/**
+*.vsix
+tsconfig.json
+esbuild.mjs
+package-lock.json
+README.assets/**
