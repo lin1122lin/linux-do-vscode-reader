@@ -11,6 +11,7 @@ import WebSocket from "ws";
 const BASE_URL = "https://linux.do";
 const COOKIE_KEY = "linuxDoReader.sessionCookie";
 const BROWSER_READY_KEY = "linuxDoReader.browserReady";
+const BROWSER_PORT_KEY = "linuxDoReader.browserPort";
 let globalDisguised = false;
 
 interface TopicSummary {
@@ -144,6 +145,10 @@ class CdpConnection implements vscode.Disposable {
       candidate.once("error", reject);
     });
     return new CdpConnection(socket);
+  }
+
+  get isOpen(): boolean {
+    return this.socket.readyState === WebSocket.OPEN;
   }
 
   async send<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -362,14 +367,32 @@ class BrowserSession implements vscode.Disposable {
       this.chromeProcess.kill();
     }
     this.chromeProcess = undefined;
+    this.port = undefined;
+    void this.context.globalState.update(BROWSER_PORT_KEY, undefined);
   }
 
   private async ensureRunning(interactive: boolean): Promise<void> {
-    if (this.connection) {
+    if (this.connection?.isOpen) {
       if (interactive) {
         await this.showWindow();
       }
       return;
+    }
+    this.connection?.dispose();
+    this.connection = undefined;
+    const existingPort = await this.getExistingPort();
+    if (existingPort && (await this.reconnect(existingPort))) {
+      if (interactive) {
+        await this.showWindow();
+      }
+      return;
+    }
+    if (this.chromeProcess && !this.chromeProcess.killed) {
+      this.chromeProcess.kill();
+      this.chromeProcess = undefined;
+      this.port = undefined;
+      await this.context.globalState.update(BROWSER_PORT_KEY, undefined);
+      await delay(400);
     }
     if (this.starting) {
       await this.starting;
@@ -396,6 +419,7 @@ class BrowserSession implements vscode.Disposable {
     const profilePath = path.join(this.context.globalStorageUri.fsPath, "chrome-profile");
     await mkdir(profilePath, { recursive: true });
     this.port = await availablePort();
+    await this.context.globalState.update(BROWSER_PORT_KEY, this.port);
     const args = [
       `--remote-debugging-port=${this.port}`,
       `--user-data-dir=${profilePath}`,
@@ -409,15 +433,21 @@ class BrowserSession implements vscode.Disposable {
     if (proxy) {
       args.splice(args.length - 1, 0, `--proxy-server=${proxy}`);
     }
-    this.chromeProcess = spawn(executable, args, {
+    const chromeProcess = spawn(executable, args, {
       stdio: "ignore",
       windowsHide: true
     });
-    this.chromeProcess.once("exit", () => {
+    this.chromeProcess = chromeProcess;
+    chromeProcess.once("exit", () => {
+      if (this.chromeProcess !== chromeProcess) {
+        return;
+      }
       this.connection?.dispose();
       this.connection = undefined;
       this.chromeProcess = undefined;
       this.targetId = undefined;
+      this.port = undefined;
+      void this.context.globalState.update(BROWSER_PORT_KEY, undefined);
     });
 
     const targets = await waitForTargets(this.port);
@@ -437,6 +467,33 @@ class BrowserSession implements vscode.Disposable {
     if (interactive) {
       await this.showWindow();
     }
+  }
+
+  private async reconnect(port: number): Promise<boolean> {
+    try {
+      const response = await undiciFetch(`http://127.0.0.1:${port}/json/list`);
+      if (!response.ok) {
+        return false;
+      }
+      const targets = (await response.json()) as CdpTarget[];
+      const target =
+        targets.find((item) => item.type === "page" && item.url.startsWith(BASE_URL)) ??
+        targets.find((item) => item.type === "page" && item.webSocketDebuggerUrl);
+      if (!target?.webSocketDebuggerUrl) {
+        return false;
+      }
+      this.targetId = target.id;
+      this.connection = await CdpConnection.connect(target.webSocketDebuggerUrl);
+      await this.connection.send("Page.enable");
+      await this.connection.send("Runtime.enable");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async getExistingPort(): Promise<number | undefined> {
+    return this.port ?? this.context.globalState.get<number>(BROWSER_PORT_KEY);
   }
 
   private async ensureLinuxDoPage(): Promise<void> {
